@@ -67,6 +67,7 @@ char c;
 char commandBuf[COMMAND_BUFFER_LENGTH +1];
 const char *delimiters            = ", \t";
 
+#define RD1124_I2C_ADDR  0x41
 
 // the setup function runs once when you press reset or power the board
 void setup()
@@ -80,7 +81,7 @@ void setup()
   flash.begin();
 
   // Set disk vendor id, product id and revision with string up to 8, 16, 4 characters respectively
-  usb_msc.setID("Lattice", "MachXO Prog", "0.1");
+  usb_msc.setID("Lattice", "MachXO I2C", "0.1");
 
   // Set callback
   usb_msc.setReadWriteCallback(msc_read_cb, msc_write_cb, msc_flush_cb);
@@ -103,6 +104,7 @@ void setup()
 
   Serial.println("Lattice MachXO I2C/SPI Programming example, utilizing");
   Serial.println("Adafruit TinyUSB Mass Storage External Flash example");
+  Serial.println("Includes I2C access for RD1124");
   Serial.print("JEDEC ID: "); Serial.println(flash.getJEDECID(), HEX);
   Serial.print("Flash size: "); Serial.println(flash.size());
 
@@ -198,33 +200,6 @@ void xoErase() {
   Serial.println("Erased Configuration and UFM");
 }
 
-void xoLoadHEX(char *filename) {
-  if (!file.open(filename)) {
-      Serial.print("Failed to open ");
-      Serial.println(filename);
-      return;    
-  } else {
-    Serial.print("Opened ");
-    Serial.println(filename);
-    Serial.println("Entering Offline Configuration");
-    machXO.enableConfigOffline();
-    Serial.println("Erasing Configuration and UFM");
-    machXO.erase(MACHXO_ERASE_CONFIG_FLASH | MACHXO_ERASE_UFM);
-    Serial.println("Waiting for erase to complete");
-    machXO.waitBusy();
-    Serial.print("Loading ");
-    Serial.println(filename);
-    machXO.loadHex(file);
-    file.close();
-    Serial.println("Programming DONE status bit");
-    machXO.programDone(); 
-    Serial.println("Refreshing image");
-    machXO.refresh();
-    Serial.print("Loaded ");    
-    Serial.println(filename);   
-  }
-}
-
 void xoProgPin(char *prog) {
   switch (prog[0]) {
     case '0':
@@ -260,6 +235,107 @@ void xoInitPin(char *init) {
       pinMode(XO_INITN, INPUT_PULLUP);
       Serial.println("Init_N pin high");
       break;  
+  }
+}
+
+void xoLoadHEX(char *filename) {
+  if (!file.open(filename)) {
+      Serial.print("Failed to open ");
+      Serial.println(filename);
+      return;    
+  } else {
+    Serial.print("Opened ");
+    Serial.println(filename);
+    machXO.loadHex(file);
+    file.close();
+    Serial.print("Loaded ");    
+    Serial.println(filename);   
+    machXO.programDone(); 
+  }
+}
+
+void rd1124Enable() {
+  Wire.beginTransmission(RD1124_I2C_ADDR);
+  Wire.write(0x06);
+  Wire.endTransmission(true);
+  Serial.println("RD1124 Enabled");
+}
+
+void rd1124Disable() {
+  Wire.beginTransmission(RD1124_I2C_ADDR);
+  Wire.write(0x04);
+  Wire.endTransmission(true);
+  Serial.println("RD1124 Disabled");
+}
+
+void rd1124MemTst() {
+  uint8_t dataBuf[8];
+  Wire.beginTransmission(RD1124_I2C_ADDR);
+  Wire.write(0x02);
+  Wire.write(0x00);
+  Wire.write(0x00);
+  Wire.write(0x01);
+  Wire.write(0x02);
+  Wire.write(0x03);
+  Wire.write(0x04);
+  Wire.write(0x05);
+  Wire.write(0x06);
+  Wire.write(0x07);
+  Wire.endTransmission(true);
+  Wire.beginTransmission(RD1124_I2C_ADDR);
+  Wire.write(0x02);
+  Wire.write(0x08);
+  Wire.write(0x10);
+  Wire.write(0x11);
+  Wire.write(0x12);
+  Wire.write(0x13);
+  Wire.write(0x14);
+  Wire.write(0x15);
+  Wire.write(0x16);
+  Wire.write(0x17);
+  Wire.endTransmission(true);
+  Serial.println("Filled with:  0x00-0x07, 0x10-0x17");
+  Wire.beginTransmission(RD1124_I2C_ADDR);
+  Wire.write(0x0B);
+  Wire.write(0x04);
+  Wire.endTransmission(false);
+  Wire.requestFrom(RD1124_I2C_ADDR, 8);
+  if (Wire.available() >= 8) {
+    for (int i = 0; i < 8; i++) {
+      dataBuf[i] = Wire.read();
+    }
+  }
+  printBufHEX("Read back from 0x04:  ", dataBuf, 8);
+}
+
+
+
+void rd1124Help(){
+  Serial.println("MachXO RD1124 Interface");
+  Serial.println("Implemented commands:");
+  Serial.println("Z/z D/d   - RD1124 Disable");
+  Serial.println("Z/z E/e   - RD1124 Enable");
+  Serial.println("Z/z M/m   - RD1124 Memory Test");
+}
+
+void xoRD1124(char *rd1124cmd) {
+  switch (rd1124cmd[0]) {
+    case 'E':
+    case 'e':
+      rd1124Enable();
+      break;
+    case 'D':
+    case 'd':
+      rd1124Disable();
+      break;
+    case 'M':
+    case 'm':
+      rd1124MemTst();
+      break;
+    default:
+      Serial.print("Unknown command:  ");
+      Serial.println(rd1124cmd);
+      rd1124Help();
   }
 }
 
@@ -305,18 +381,7 @@ void printHelp(){
   Serial.println("I/i [0/low/1/high] - MachXO INITN pin");
   Serial.println("P/p [0/low/1/high] - MachXO PROGRAMN pin");
   Serial.println("L/l [filename] - MachXO Load hex file");
-  Serial.println("  The load command performs these steps:");
-  Serial.println("    - Open file to confirm exists");
-  Serial.println("    - Enter offline configuration mode");
-  Serial.println("    - Erase Configuration and UFM");
-  Serial.println("    - Load hex file into MachXO");
-  Serial.println("    - Send Program Done command");
-  Serial.println("    - Send Refresh command");
-  Serial.println("");
-  Serial.println("It may be necessary to drive PROGRAMN low to access ");
-  Serial.println("the configuration port if Port Persistence is not "); 
-  Serial.println("enabled in the feature bits of the MachXO2/3 device");
-  Serial.println("");
+  Serial.println("Z/z [command] - I2C RD1124 Command");
 }
 
 void runCommand() {
@@ -359,6 +424,10 @@ void runCommand() {
     case 'i':
       xoInitPin(strtok(NULL, delimiters));
       break;
+    case 'Z':
+    case 'z':
+      xoRD1124(strtok(NULL, delimiters));
+      break;
     case 'D':
     case 'd':
       printDir();
@@ -366,7 +435,7 @@ void runCommand() {
     default:
       Serial.print("Unknown command:  ");
       Serial.println(commandName);
-      printHelp;
+      printHelp();
   }
 }
 
